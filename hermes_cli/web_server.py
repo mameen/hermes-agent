@@ -48,6 +48,26 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
+
+def _ensure_js_mime_types() -> None:
+    """Force ``.js``/``.mjs`` to a JavaScript MIME type, ignoring the registry.
+
+    On Windows, ``mimetypes`` seeds its type map from the registry, where
+    ``.js``/``.mjs`` are frequently mis-registered as ``text/plain`` (Visual
+    Studio and other installers clobber the ``HKCR\\.js\\Content Type`` key).
+    Starlette's ``StaticFiles`` mount and the ``serve_spa`` ``FileResponse``
+    fallback both read this process-global map, so the dashboard's ES-module
+    bundle gets served as ``text/plain`` and the browser refuses to execute it
+    as a module script — React never mounts and the page stays blank.
+    ``add_type`` overwrites whatever the registry seeded and is a harmless
+    no-op on macOS/Linux where the mapping is already correct.
+    """
+    mimetypes.add_type("text/javascript", ".js")
+    mimetypes.add_type("text/javascript", ".mjs")
+
+
+_ensure_js_mime_types()
+
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))

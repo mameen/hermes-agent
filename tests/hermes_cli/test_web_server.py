@@ -6336,6 +6336,66 @@ class TestThemeBootstrapCSS:
         assert "SPA" in resp.text
 
 
+class TestDashboardJsMimeType:
+    """Regression: the dashboard must serve ``.js``/``.mjs`` with a JavaScript
+    MIME type even when the host's mimetypes map has been seeded with a broken
+    ``.js -> text/plain`` mapping (the Windows-registry failure mode that
+    renders the dashboard blank — browsers refuse to execute a module script
+    served as ``text/plain``). Both JS-serving paths are covered: the
+    ``/assets`` ``StaticFiles`` mount and the ``serve_spa`` ``FileResponse``
+    catch-all fallback.
+    """
+
+    _JS_MIME_TYPES = {"text/javascript", "application/javascript"}
+
+    @staticmethod
+    def _mount_with_broken_registry(tmp_path, monkeypatch):
+        """Build a SPA TestClient after simulating a registry that maps
+        ``.js``/``.mjs`` to ``text/plain``, then re-applying the fix."""
+        import mimetypes as _mimetypes
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        # Simulate the corrupted Windows registry seeding: clobber the
+        # process-global map so an unpatched server would emit text/plain.
+        monkeypatch.setitem(_mimetypes.types_map, ".js", "text/plain")
+        monkeypatch.setitem(_mimetypes.types_map, ".mjs", "text/plain")
+        # The real import-time fix runs once; re-assert it here so the test
+        # exercises the actual production routine rather than a copy.
+        ws._ensure_js_mime_types()
+
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<html><head><title>t</title></head><body>SPA</body></html>",
+            encoding="utf-8",
+        )
+        (dist / "assets" / "index-abc123.js").write_text(
+            "export const x = 1;", encoding="utf-8"
+        )
+        # Root-level module served through the serve_spa FileResponse fallback.
+        (dist / "sw.mjs").write_text("export {};", encoding="utf-8")
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        spa_app = FastAPI()
+        ws.mount_spa(spa_app)
+        return TestClient(spa_app)
+
+    def test_assets_js_bundle_served_as_javascript(self, tmp_path, monkeypatch):
+        client = self._mount_with_broken_registry(tmp_path, monkeypatch)
+        resp = client.get("/assets/index-abc123.js")
+        assert resp.status_code == 200
+        media_type = resp.headers["content-type"].split(";")[0].strip()
+        assert media_type in self._JS_MIME_TYPES, media_type
+
+    def test_root_mjs_fallback_served_as_javascript(self, tmp_path, monkeypatch):
+        client = self._mount_with_broken_registry(tmp_path, monkeypatch)
+        resp = client.get("/sw.mjs")
+        assert resp.status_code == 200
+        media_type = resp.headers["content-type"].split(";")[0].strip()
+        assert media_type in self._JS_MIME_TYPES, media_type
+
+
 class TestNormaliseThemeExtensions:
     """Tests for the extended normaliser fields (assets, customCSS,
     componentStyles, layoutVariant) — the surfaces themes use to reskin
